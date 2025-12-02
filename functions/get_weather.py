@@ -3,17 +3,23 @@
 
 # https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={your_api_key}
 
+import os
 import requests
 from datetime import date, datetime, timedelta, timezone
 from google.genai import types
+from dotenv import load_dotenv
+from typing import Union
+
+load_dotenv()
 
 
 def get_historical_weather(lat: float, lon: float, target_date: date):
-    API_KEY = "c39b37adb6mshba13d2e8386991cp164da7jsn9228d9bf9fcc"
+    METEOSTAT_API_KEY = os.environ.get("METEOSTAT_API_KEY")
+
     url = "https://meteostat.p.rapidapi.com/point/daily"
 
     start_str = target_date.strftime("%Y-%m-%d")
-    end_str   = (target_date + timedelta(days=1)).strftime("%Y-%m-%d")
+    end_str = (target_date + timedelta(days=1)).strftime("%Y-%m-%d")
 
     params = {
         "lat": lat,
@@ -23,7 +29,7 @@ def get_historical_weather(lat: float, lon: float, target_date: date):
     }
 
     headers = {
-        "x-rapidapi-key": API_KEY,
+        "x-rapidapi-key": METEOSTAT_API_KEY,
         "x-rapidapi-host": "meteostat.p.rapidapi.com"
     }
 
@@ -35,8 +41,16 @@ def get_historical_weather(lat: float, lon: float, target_date: date):
 
     day = data["data"][0]
 
+    tavg = day.get("tavg")
+    if tavg is not None:
+        temp = tavg
+    else:
+        tmin = day.get("tmin")
+        tmax = day.get("tmax")
+        temp = (tmin + tmax) / 2 if tmin is not None and tmax is not None else None
 
-    temp = day.get("tavg") or (day.get("tmin") + day.get("tmax")) / 2
+    precip = day.get("prcp", 0)
+    snow = day.get("snow", 0)
 
     return {
         "source": "meteostat",
@@ -47,25 +61,31 @@ def get_historical_weather(lat: float, lon: float, target_date: date):
         "description": "historical weather",
         "wind_speed": day.get("wspd"),
         "clouds": None,
+        "precip": precip,
+        "snow": snow,
         "time": day.get("date")
     }
 
 
-
 def get_current_weather(lat: float, lon: float):
-    API_KEY = "6f2af1fd1c88f29a0db45c69bd6327c6"
+    OPENWEATHER_API_KEY = os.environ.get("OPENWEATHER_API_KEY")
     url = "https://api.openweathermap.org/data/2.5/weather"
     # aw hek = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={your_api_key}"
 
     params = {
         "lat": lat,
         "lon": lon,
-        "appid": API_KEY,
+        "appid": OPENWEATHER_API_KEY,
         "units": "metric"
     }
 
     response = requests.get(url, params=params)
     data = response.json()
+
+    rain = data.get("rain", {})
+    snow_data = data.get("snow", {})
+    precip = rain.get("1h") or rain.get("3h") or 0
+    snow = snow_data.get("1h") or snow_data.get("3h") or 0
 
     return {
         "source": "openweather_current",
@@ -76,25 +96,26 @@ def get_current_weather(lat: float, lon: float):
         "description": data["weather"][0]["description"],
         "wind_speed": data["wind"]["speed"],
         "clouds": data["clouds"]["all"],
+        "precip": precip,
+        "snow": snow,
         "time": datetime.fromtimestamp(data["dt"], tz=timezone.utc).isoformat()
     }
 
 
-
 def get_forecast_weather(lat: float, lon: float, target_date: date):
-    API_KEY = "6f2af1fd1c88f29a0db45c69bd6327c6"
+    OPENWEATHER_API_KEY = os.environ.get("OPENWEATHER_API_KEY")
     url = "https://api.openweathermap.org/data/2.5/forecast"
 
     params = {
         "lat": lat,
         "lon": lon,
-        "appid": API_KEY,
+        "appid": OPENWEATHER_API_KEY,
         "units": "metric"
     }
 
     response = requests.get(url, params=params)
     data = response.json()
-    
+
     date_str = target_date.strftime("%Y-%m-%d")
 
     # Filter forecast entries for that specific date
@@ -106,6 +127,11 @@ def get_forecast_weather(lat: float, lon: float, target_date: date):
     # simple choice: take middle of the day (around 12:00)
     chosen = slots[len(slots) // 2]
 
+    rain = chosen.get("rain", {})
+    snow_data = chosen.get("snow", {})
+    precip = rain.get("3h") or rain.get("1h") or 0
+    snow = snow_data.get("3h") or snow_data.get("1h") or 0
+
     return {
         "source": "openweather_forecast",
         "location": data.get("city", {}).get("name"),
@@ -115,23 +141,54 @@ def get_forecast_weather(lat: float, lon: float, target_date: date):
         "description": chosen["weather"][0]["description"],
         "wind_speed": chosen["wind"]["speed"],
         "clouds": chosen["clouds"]["all"],
+        "precip": precip,
+        "snow": snow,
         "time": chosen["dt_txt"]
     }
 
 
+def get_weather(lat: float, lon: float, target_date: Union[str, date, None]):
+    # If no date provided → assume today
+    if target_date is None:
+        target = date.today()
 
+    # If it's a string, interpret it
+    elif isinstance(target_date, str):
+        text = target_date.strip().lower()
 
-def get_weather(lat: float, lon: float, target_date: date):
+        if text == "today":
+            target = date.today()
+        elif text == "tomorrow":
+            target = date.today() + timedelta(days=1)
+        elif text.startswith("in ") and text.endswith(" days"):
+            # e.g. "in 3 days"
+            try:
+                n = int(text[3:-5].strip())
+                target = date.today() + timedelta(days=n)
+            except ValueError:
+                # fall back to ISO parsing
+                target = date.fromisoformat(target_date)
+        else:
+            # Assume ISO format 'YYYY-MM-DD'
+            target = date.fromisoformat(target_date)
+
+    # If it's already a date object
+    elif isinstance(target_date, date):
+        target = target_date
+    else:
+        return {"error": f"Unsupported target_date type: {type(target_date)}"}
+
     today = date.today()
 
-    if target_date < today:
-        return get_historical_weather(lat, lon, target_date)
+    # ✅ use `target`, not `target_date`
+    if target < today:
+        return get_historical_weather(lat, lon, target)
 
-    elif target_date == today:
+    elif target == today:
         return get_current_weather(lat, lon)
 
-    elif target_date <= today + timedelta(days=5):
-        return get_forecast_weather(lat, lon, target_date)
+    elif target <= today + timedelta(days=5):
+        return get_forecast_weather(lat, lon, target)
 
     else:
         return {"error": "Forecast beyond 5 days not available."}
@@ -139,7 +196,7 @@ def get_weather(lat: float, lon: float, target_date: date):
 
 schema_get_weather = types.FunctionDeclaration(
     name="get_weather",
-    description="Gets weather information like temperature of a specific location",
+    description="Gets weather information like temperature of a specific location.",
     parameters=types.Schema(
         type=types.Type.OBJECT,
         properties={
@@ -153,9 +210,13 @@ schema_get_weather = types.FunctionDeclaration(
             ),
             "target_date": types.Schema(
                 type=types.Type.STRING,
-                description="Target date for the weather in ISO format 'YYYY-MM-DD'."
-            )
+                description=(
+                    "Target date for the weather. Can be 'today', 'tomorrow', "
+                    "'in N days', or an ISO date 'YYYY-MM-DD'. If omitted, "
+                    "today is assumed."
+                )
+            ),
         },
-        required=["lat", "lon", "target_date"]
+        required=["lat", "lon"]
     )
 )
