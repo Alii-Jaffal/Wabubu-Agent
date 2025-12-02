@@ -83,7 +83,7 @@ Wabubu-Agent/
 ## 🛠 Installation
 
 Clone the repository:
-git clone https://github.com/your-username/Wabubu-Agent.git
+git clone https://github.com/Alii-Jaffal/Wabubu-Agent.git
 cd Wabubu-Agent
 
 Install dependencies (recommended):
